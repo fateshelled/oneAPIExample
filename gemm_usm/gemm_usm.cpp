@@ -6,7 +6,6 @@
 #include "oneapi/math.hpp"
 
 
-
 template <typename fp>
 inline fp rand_scalar() {
     return fp(std::rand()) / fp(RAND_MAX) - fp(0.5);
@@ -110,7 +109,7 @@ void run_gemm_example(const sycl::device& dev) {
     queue.memcpy(cpu_C, C.data(), sizec * sizeof(float)).wait();
 
     //
-    // Execute Gemm on CPU and GPU device
+    // Execute Gemm 
     //
     // add oneapi::math::blas::gemm to execution queue
     auto gemm_event = oneapi::math::blas::column_major::gemm(
@@ -122,7 +121,6 @@ void run_gemm_example(const sycl::device& dev) {
 
     // copy data to host
     queue.memcpy(result_cpu.data(), cpu_C, sizec * sizeof(float)).wait_and_throw();
-
 
     // print results
     std::cout << "\n\t\tGEMM parameters:" << std::endl;
@@ -158,8 +156,10 @@ void run_gemm_example(const sycl::device& dev) {
 int main(int argc, char** argv) {
 
     try {
-        // sycl::device dev(sycl::cpu_selector_v); // CPU
-        sycl::device dev(sycl::gpu_selector_v); // iGPU
+        /* Specity device */ 
+        sycl::device dev; // set from Environments variable `ONEAPI_DEVICE_SELECTOR`
+        // sycl::device dev(sycl::cpu_selector_v); // intel CPU
+        // sycl::device dev(sycl::gpu_selector_v); // intel GPU/iGPU
         // sycl::device dev([](const sycl::device &dev) {
         //     return dev.is_gpu() && (dev.get_info<sycl::info::device::vendor_id>() == NVIDIA_ID);
         // }); // NVIDIA GPU

@@ -10,17 +10,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(oneMath REQUIRED)
 
-add_executable(example_blas_gemm_usm
+add_executable(${PROJECT_NAME}
   gemm_usm.cpp
 )
 
-target_link_libraries(example_blas_gemm_usm PRIVATE
+target_link_libraries(${PROJECT_NAME} PRIVATE
   onemath
 )
-target_compile_options(example_blas_gemm_usm PRIVATE
+target_compile_options(${PROJECT_NAME} PRIVATE
   -fsycl
 )
-target_link_options(example_blas_gemm_usm PRIVATE
+target_link_options(${PROJECT_NAME} PRIVATE
   -fsycl
 )
 

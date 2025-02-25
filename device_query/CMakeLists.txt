@@ -10,16 +10,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(oneMath REQUIRED)
 
-add_executable(device_query
+add_executable(${PROJECT_NAME}
   main.cpp
 )
 
-target_link_libraries(device_query PRIVATE
+target_link_libraries(${PROJECT_NAME} PRIVATE
   onemath
 )
-target_compile_options(device_query PRIVATE
+target_compile_options(${PROJECT_NAME} PRIVATE
   -fsycl
 )
-target_link_options(device_query PRIVATE
+target_link_options(${PROJECT_NAME} PRIVATE
   -fsycl
 )

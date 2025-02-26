@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.15)
 set(CMAKE_C_COMPILER "icx" CACHE PATH "C compiler" FORCE)
 set(CMAKE_CXX_COMPILER "icpx" CACHE PATH "C++ compiler" FORCE)
 
-project(example_point_cloud_transform)
+project(example_point_cloud_voxel_downsampling)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

@@ -64,6 +64,7 @@ void bitonic_sort(sycl::queue& q, const std::vector<T> &input, std::vector<T> &r
 
     result.resize(N);
     q.memcpy(result.data(), d_data, N * sizeof(T)).wait();
+    sycl::free(d_data, q);
 }
 
 #endif // BITONIT_SORT_HPP

@@ -1,4 +1,6 @@
-# oneMathExample
+# oneAPIExample
+
+oneAPI and oneMath examples.
 
 ## Reference
 - https://github.com/uxlfoundation/oneMath

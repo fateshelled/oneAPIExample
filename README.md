@@ -1,6 +1,6 @@
 # oneAPIExample
 
-oneAPI and oneMath examples.
+Intel oneAPI and oneMath examples.
 
 ## Reference
 - https://github.com/uxlfoundation/oneMath

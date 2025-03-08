@@ -8,6 +8,8 @@
 #include <thread>
 #include <vector>
 
+#include "nanoflann.hpp"
+
 #if __has_include(<sycl/sycl.hpp>)
 #include <sycl/sycl.hpp>
 #else
@@ -22,7 +24,7 @@ struct KNNResult {
 
 // Node structure for KD-Tree (ignoring w component)
 struct FlatKDNode4f {
-  float x, y, z, w;  // Point coordinates (w is assumed to be 1.0)
+  Eigen::Vector4f point;  // Point coordinates (w is assumed to be 1.0)
   int idx;           // Index of the point in the original dataset
   int axis;          // Split axis (0=x, 1=y, 2=z)
   int left;          // Index of left child node (-1 if none)
@@ -140,10 +142,7 @@ KDTree createFlatKDTree4f(const PointCloud& points) {
 
     // Initialize flat node
     FlatKDNode4f& node = flatTree[nodeIdx];
-    node.x = points[pointIdx](0);
-    node.y = points[pointIdx](1);
-    node.z = points[pointIdx](2);
-    node.w = 1.0f;  // w component is fixed at 1.0
+    node.point = points[pointIdx];
     node.idx = pointIdx;
     node.axis = axis;
     node.left = -1;
@@ -182,6 +181,107 @@ KDTree createFlatKDTree4f(const PointCloud& points) {
   flatTree.resize(nextNodeIdx);
 
   return flatTree;
+}
+
+// K nearest neighbor search using FlatKDTree on CPU
+KNNResult findKNearestNeighbors_kdtree_cpu(
+  const KDTree& flatTree,     // Pre-built KD-Tree
+  const PointCloud& points,   // Original dataset points
+  const PointCloud& queries,  // Query points
+  const int k) {              // Number of neighbors to find
+
+  const size_t n = points.size();   // Number of dataset points
+  const size_t q = queries.size();  // Number of query points
+
+  // Initialize result structure
+  KNNResult result;
+  result.indices.resize(q);
+  result.distances.resize(q);
+
+  for (size_t i = 0; i < q; ++i) {
+    result.indices[i].resize(k, -1);
+    result.distances[i].resize(k, std::numeric_limits<float>::max());
+  }
+
+// Process each query point in parallel
+#pragma omp parallel for
+  for (size_t queryIdx = 0; queryIdx < q; ++queryIdx) {
+    const auto& query = queries[queryIdx];
+
+    // Arrays to store distances and indices of K nearest points
+    std::vector<float> bestDists(k, std::numeric_limits<float>::max());
+    std::vector<int> bestIdxs(k, -1);
+
+    // Non-recursive KD-Tree traversal using a stack
+    std::vector<int> nodeStack;
+    nodeStack.reserve(32);  // Reserve space but don't overallocate
+
+    // Start from root node
+    nodeStack.push_back(0);
+
+    while (!nodeStack.empty()) {
+      const int nodeIdx = nodeStack.back();
+      nodeStack.pop_back();
+
+      // Skip invalid nodes
+      if (nodeIdx == -1) continue;
+
+      const FlatKDNode4f& node = flatTree[nodeIdx];
+
+      // Calculate distance to current node (3D space)
+      const float dx = query.x() - node.point.x();
+      const float dy = query.y() - node.point.y();
+      const float dz = query.z() - node.point.z();
+      const float dist = dx * dx + dy * dy + dz * dz;
+
+      // Check if this node should be included in K nearest
+      if (dist < bestDists[k - 1]) {
+        // Simple linear insertion - works well for small k
+        int insertPos = k - 1;
+        while (insertPos > 0 && dist < bestDists[insertPos - 1]) {
+          bestDists[insertPos] = bestDists[insertPos - 1];
+          bestIdxs[insertPos] = bestIdxs[insertPos - 1];
+          insertPos--;
+        }
+
+        // Insert new point
+        bestDists[insertPos] = dist;
+        bestIdxs[insertPos] = node.idx;
+      }
+
+      // Distance along split axis
+      float axisDistance;
+      if (node.axis == 0)
+        axisDistance = dx;
+      else if (node.axis == 1)
+        axisDistance = dy;
+      else
+        axisDistance = dz;
+
+      // Determine nearer and further subtrees
+      const int nearerNode = (axisDistance <= 0) ? node.left : node.right;
+      const int furtherNode = (axisDistance <= 0) ? node.right : node.left;
+
+      // Add nodes to stack in reverse order of traversal (nearer one on top)
+      if (axisDistance * axisDistance <= bestDists[k - 1]) {
+        if (furtherNode != -1) {
+          nodeStack.push_back(furtherNode);
+        }
+      }
+
+      if (nearerNode != -1) {
+        nodeStack.push_back(nearerNode);
+      }
+    }
+
+    // Store results
+    for (int i = 0; i < k; i++) {
+      result.indices[queryIdx][i] = bestIdxs[i];
+      result.distances[queryIdx][i] = bestDists[i];
+    }
+  }
+
+  return result;
 }
 
 template <size_t MAX_K = 50>
@@ -368,9 +468,9 @@ KNNResult findKNearestNeighbors_kdtree_sycl(
             const FlatKDNode4f& node = d_tree[nodeIdx];
 
             // Calculate distance to current node (3D space)
-            const float dx = query.x() - node.x;
-            const float dy = query.y() - node.y;
-            const float dz = query.z() - node.z;
+            const float dx = query.x() - node.point.x();
+            const float dy = query.y() - node.point.y();
+            const float dz = query.z() - node.point.z();
             const float dist = dx * dx + dy * dy + dz * dz;
 
             // Check if this node should be included in K nearest
@@ -389,13 +489,7 @@ KNNResult findKNearestNeighbors_kdtree_sycl(
             }
 
             // Distance along split axis
-            float axisDistance;
-            if (node.axis == 0)
-              axisDistance = dx;
-            else if (node.axis == 1)
-              axisDistance = dy;
-            else
-              axisDistance = dz;
+            const float axisDistance (node.axis == 0 ? dx : (node.axis == 1 ? dy : dz));
 
             // Determine nearer and further subtrees
             const int nearerNode = (axisDistance <= 0) ? node.left : node.right;
@@ -445,17 +539,84 @@ KNNResult findKNearestNeighbors_kdtree_sycl(
   return result;
 }
 
+// Adapter class for nanoflann
+template <typename T>
+struct PointCloudAdapter {
+  const std::vector<Eigen::Vector4<T>, Eigen::aligned_allocator<Eigen::Vector4<T>>>& points;
+
+  PointCloudAdapter(const std::vector<Eigen::Vector4<T>, Eigen::aligned_allocator<Eigen::Vector4<T>>>& pts) : points(pts) {}
+
+  inline size_t kdtree_get_point_count() const { return points.size(); }
+
+  inline T kdtree_get_pt(const size_t idx, const size_t dim) const { return points[idx](dim); }
+
+  template <class BBOX>
+  bool kdtree_get_bbox(BBOX&) const {
+    return false;
+  }
+};
+
+KNNResult findKNearestNeighbors_nanoflann(
+  const PointCloud& queries,  // Query points
+  const PointCloud& points,   // Original dataset points
+  const int k) {              // Number of neighbors to find
+
+  const size_t n = points.size();   // Number of dataset points
+  const size_t q = queries.size();  // Number of query points
+
+  // Initialize result structure
+  KNNResult result;
+  result.indices.resize(q);
+  result.distances.resize(q);
+
+  for (size_t i = 0; i < q; ++i) {
+    result.indices[i].resize(k, -1);
+    result.distances[i].resize(k, std::numeric_limits<float>::max());
+  }
+
+  try {
+    // define Adapter and KDTree
+    typedef PointCloudAdapter<float> PCAdapt;
+    PCAdapt pcadapt(points);
+    typedef nanoflann::KDTreeSingleIndexAdaptor<nanoflann::L2_Simple_Adaptor<float, PCAdapt>, PCAdapt, 3> KDTreeType;
+
+    // build KDTree
+    KDTreeType index(3, pcadapt, nanoflann::KDTreeSingleIndexAdaptorParams(10 /* max leaf */));
+    index.buildIndex();
+
+    std::vector<size_t> ret_indices(k);
+
+    // KNN search
+#pragma omp parallel for
+    for (size_t i = 0; i < q; ++i) {
+      nanoflann::KNNResultSet<float> resultSet(k);
+      resultSet.init(&ret_indices[0], &result.distances[i][0]);
+      index.findNeighbors(resultSet, queries[i].data(), nanoflann::SearchParameters());
+
+      // Copy to output structure
+      for (size_t j = 0; j < k; ++j) {
+        result.indices[i][j] = ret_indices[j];
+      }
+    }
+
+  } catch (const std::exception& e) {
+    std::cerr << "nanoflann exception caught: " << e.what() << std::endl;
+  }
+
+  return result;
+}
+
 // Main function
 int main() {
   const size_t LOOP = 10;
   const size_t knn = 10;
 
   // Generate random 3D points
-  const size_t numTargetPoints = 50000;
+  const size_t numTargetPoints = 128 * 256;
   PointCloud target_points;
   target_points.reserve(numTargetPoints);
 
-  const size_t numQueryPoints = 2000;
+  const size_t numQueryPoints = 128 * 256;
   PointCloud query_points;
   query_points.reserve(numQueryPoints);
 
@@ -493,6 +654,21 @@ int main() {
   }
   std::cout << "CPU brute force search completed in " << elapsed_cpu_bruteforce << " ms." << std::endl;
 
+  // CPU KDTree
+  std::cout << "Running CPU KD-Tree search..." << std::endl;
+  double elapsed_cpu_kdtree = 0.0;
+  KNNResult nearestCPUKDTree;
+  for (size_t i = 0; i < LOOP; ++i) {
+    auto start_cpu_kdtree = std::chrono::high_resolution_clock::now();
+    const auto kdtree = createFlatKDTree4f(target_points);
+    nearestCPUKDTree = findKNearestNeighbors_kdtree_cpu(kdtree, target_points, query_points, knn);
+    auto end_cpu_kdtree = std::chrono::high_resolution_clock::now();
+    elapsed_cpu_kdtree += std::chrono::duration_cast<std::chrono::milliseconds>(end_cpu_kdtree - start_cpu_kdtree).count();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  elapsed_cpu_kdtree /= LOOP;
+  std::cout << "CPU KD-Tree search completed." << std::endl;
+
   // SYCL brute force search
   std::cout << "Running SYCL brute force search..." << std::endl;
   double elapsed_sycl_bruteforce = 0.0;
@@ -522,10 +698,45 @@ int main() {
   elapsed_sycl_kdtree /= LOOP;
   std::cout << "SYCL KD-Tree search completed." << std::endl;
 
+  // nanoflann KD-Tree
+  std::cout << "Running nanoflann KD-Tree search..." << std::endl;
+  double elapsed_nanoflann = 0.0;
+  KNNResult nearestNanoflann;
+  for (size_t i = 0; i < LOOP; ++i) {
+    auto start_nanoflann = std::chrono::high_resolution_clock::now();
+    nearestNanoflann = findKNearestNeighbors_nanoflann(query_points, target_points, knn);
+    auto end_nanoflann = std::chrono::high_resolution_clock::now();
+    elapsed_nanoflann += std::chrono::duration_cast<std::chrono::milliseconds>(end_nanoflann - start_nanoflann).count();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  elapsed_nanoflann /= LOOP;
+  std::cout << "nanoflann KD-Tree search completed." << std::endl;
+
+  // Verify CPU KDTree against CPU brute force
+  bool cpuKdtreeCorrect = true;
+  int mismatchCount = 0;
+  for (size_t i = 0; i < query_points.size(); ++i) {
+    for (size_t j = 0; j < knn; ++j) {
+      if (nearestCPUBruteForce.indices[i][j] != nearestCPUKDTree.indices[i][j]) {
+        // Check if distance is the same (may have different indices with same distance)
+        float distBrute = nearestCPUBruteForce.distances[i][j];
+        float distKDTree = nearestCPUKDTree.distances[i][j];
+        if (std::abs(distBrute - distKDTree) > 1e-5f) {
+          ++mismatchCount;
+          if (mismatchCount < 10) {
+            std::cout << "CPU KD-Tree mismatch at query " << i << ", neighbor " << j << ": CPU Brute idx=" << nearestCPUBruteForce.indices[i][j] << " (dist=" << distBrute
+                      << "), CPU KD-Tree idx=" << nearestCPUKDTree.indices[i][j] << " (dist=" << distKDTree << ")" << std::endl;
+          }
+          cpuKdtreeCorrect = false;
+        }
+      }
+    }
+  }
+
   // Verify SYCL brute force against CPU brute force
   std::cout << "\nVerifying SYCL brute force against CPU reference..." << std::endl;
   bool syclBruteForceCorrect = true;
-  int mismatchCount = 0;
+  mismatchCount = 0;
   for (size_t i = 0; i < query_points.size(); ++i) {
     for (size_t j = 0; j < knn; ++j) {
       if (nearestCPUBruteForce.indices[i][j] != nearestSYCLBruteForce.indices[i][j]) {
@@ -566,18 +777,48 @@ int main() {
     }
   }
 
+  // Verify KD-Tree against nanoflann
+  bool nanoflannCorrect = true;
+  mismatchCount = 0;
+  for (size_t i = 0; i < query_points.size(); ++i) {
+    for (size_t j = 0; j < knn; ++j) {
+      if (nearestCPUBruteForce.indices[i][j] != nearestNanoflann.indices[i][j]) {
+        // 距離が同じかどうか確認
+        float distCPU = nearestCPUBruteForce.distances[i][j];
+        float distNanoflann = nearestNanoflann.distances[i][j];
+        if (std::abs(distCPU - distNanoflann) > 1e-5f) {
+          ++mismatchCount;
+          if (mismatchCount < 10) {
+            std::cout << "nanoflann mismatch at query " << i << ", neighbor " << j << ": CPU idx=" << nearestCPUBruteForce.indices[i][j] << " (dist=" << distCPU
+                      << "), nanoflann idx=" << nearestNanoflann.indices[i][j] << " (dist=" << distNanoflann << ")" << std::endl;
+          }
+          nanoflannCorrect = false;
+        }
+      }
+    }
+  }
+
   // Output performance results
   std::cout << "\nPerformance Results:" << std::endl;
   std::cout << "CPU Brute Force:  " << elapsed_cpu_bruteforce << " ms" << std::endl;
+  std::cout << "CPU KD-Tree:       " << elapsed_cpu_kdtree << " ms" << std::endl;
   std::cout << "SYCL Brute Force: " << elapsed_sycl_bruteforce << " ms" << std::endl;
   std::cout << "SYCL KD-Tree:     " << elapsed_sycl_kdtree << " ms" << std::endl;
-  std::cout << "CPU vs SYCL Brute Force Speedup: " << elapsed_cpu_bruteforce / elapsed_sycl_bruteforce << "x" << std::endl;
+  std::cout << "nanoflann KD-Tree:  " << elapsed_nanoflann << " ms" << std::endl;
+
+  std::cout << "CPU Brute Force vs CPU KD-Tree Speedup: " << elapsed_cpu_bruteforce / elapsed_cpu_kdtree << "x" << std::endl;
+  std::cout << "CPU Brute Force vs SYCL Brute Force Speedup: " << elapsed_cpu_bruteforce / elapsed_sycl_bruteforce << "x" << std::endl;
+  std::cout << "CPU KD-Tree vs SYCL KD-Tree Speedup: " << elapsed_cpu_kdtree / elapsed_sycl_kdtree << "x" << std::endl;
   std::cout << "SYCL Brute Force vs SYCL KD-Tree Speedup: " << elapsed_sycl_bruteforce / elapsed_sycl_kdtree << "x" << std::endl;
+  std::cout << "SYCL KD-Tree vs nanoflann KD-Tree: " << elapsed_sycl_kdtree / elapsed_nanoflann << "x" << std::endl;
+  std::cout << "CPU vs nanoflann KD-Tree:          " << elapsed_cpu_bruteforce / elapsed_nanoflann << "x" << std::endl;
 
   // Output verification results
   std::cout << "\nAccuracy Check:" << std::endl;
+  std::cout << "CPU KD-Tree correct:        " << (cpuKdtreeCorrect ? "Yes" : "No") << std::endl;
   std::cout << "SYCL Brute Force correct:  " << (syclBruteForceCorrect ? "Yes" : "No") << std::endl;
   std::cout << "SYCL KD-Tree correct:      " << (kdtreeCorrect ? "Yes" : "No") << std::endl;
+  std::cout << "nanoflann KD-Tree correct:   " << (nanoflannCorrect ? "Yes" : "No") << std::endl;
 
   if (!syclBruteForceCorrect || !kdtreeCorrect) {
     std::cout << "\nNOTE: Some mismatches were found, but this may be acceptable if:" << std::endl;

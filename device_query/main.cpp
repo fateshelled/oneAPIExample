@@ -9,8 +9,6 @@
 #include <CL/sycl.hpp>
 #endif
 
-#include "oneapi/math.hpp"
-
 int main(int argc, char** argv) {
 
     for (auto platform : sycl::platform::get_platforms())
@@ -35,7 +33,7 @@ int main(int argc, char** argv) {
                         << device.get_info<sycl::info::device::global_mem_size>() / 1024.0 / 1024.0 / 1024.0 << " GB" << std::endl;
             std::cout << "\tMax Clock Frequency: "
                     << device.get_info<sycl::info::device::max_clock_frequency>() / 1000.0 << " GHz" << std::endl;
-            std::cout << "\tDouble precision support: " 
+            std::cout << "\tDouble precision support: "
                     << (device.has(sycl::aspect::fp64) ? "true": "false") << std::endl;
             std::cout << "\tAvailable: "
             << (device.get_info<sycl::info::device::is_available>() ? "true" : "false") << std::endl;

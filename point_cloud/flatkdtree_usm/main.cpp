@@ -25,10 +25,10 @@ struct KNNResult {
 // Node structure for KD-Tree (ignoring w component)
 struct FlatKDNode4f {
   Eigen::Vector4f point;  // Point coordinates (w is assumed to be 1.0)
-  int idx;           // Index of the point in the original dataset
-  int axis;          // Split axis (0=x, 1=y, 2=z)
-  int left;          // Index of left child node (-1 if none)
-  int right;         // Index of right child node (-1 if none)
+  int idx;                // Index of the point in the original dataset
+  int axis;               // Split axis (0=x, 1=y, 2=z)
+  int left;               // Index of left child node (-1 if none)
+  int right;              // Index of right child node (-1 if none)
 };
 
 using PointCloud = std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f>>;
@@ -149,10 +149,9 @@ KDTree createFlatKDTree4f(const PointCloud& points) {
     node.right = -1;
 
     // Extract indices for left subtree
-    std::vector<int> leftIndices;
-    leftIndices.reserve(medianPos);
+    std::vector<int> leftIndices(medianPos);
     for (size_t i = 0; i < medianPos; ++i) {
-      leftIndices.push_back(sortedValues[i].second);
+      leftIndices[i] = sortedValues[i].second;
     }
 
     // Extract indices for right subtree
@@ -250,14 +249,7 @@ KNNResult findKNearestNeighbors_kdtree_cpu(
       }
 
       // Distance along split axis
-      float axisDistance;
-      if (node.axis == 0)
-        axisDistance = dx;
-      else if (node.axis == 1)
-        axisDistance = dy;
-      else
-        axisDistance = dz;
-
+      const float axisDistance(node.axis == 0 ? dx : (node.axis == 1 ? dy : dz));
       // Determine nearer and further subtrees
       const int nearerNode = (axisDistance <= 0) ? node.left : node.right;
       const int furtherNode = (axisDistance <= 0) ? node.right : node.left;
@@ -489,7 +481,7 @@ KNNResult findKNearestNeighbors_kdtree_sycl(
             }
 
             // Distance along split axis
-            const float axisDistance (node.axis == 0 ? dx : (node.axis == 1 ? dy : dz));
+            const float axisDistance(node.axis == 0 ? dx : (node.axis == 1 ? dy : dz));
 
             // Determine nearer and further subtrees
             const int nearerNode = (axisDistance <= 0) ? node.left : node.right;
